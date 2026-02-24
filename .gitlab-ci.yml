@@ -1,0 +1,97 @@
+stages:
+  - build
+  - test
+
+variables:
+  PYTHON_VERSION: "3.9"
+
+cache:
+  paths:
+    - .cache/pip
+    - venv/
+
+before_script:
+  - python3 -V
+  - pip3 install virtualenv
+  - virtualenv venv
+  - source venv/bin/activate
+
+build-job:
+  stage: build
+  image: python:3.9
+  script:
+    - echo "🔨 Compilando aplicación..."
+    - echo "📁 Estructura del proyecto:"
+    - ls -la
+    - echo "📁 Contenido de src:"
+    - ls -la src/
+  artifacts:
+    paths:
+      - src/
+      - tests/
+
+bandit-sast:
+  stage: test
+  image: python:3.9-slim
+  allow_failure: true
+  before_script:
+    - apt-get update && apt-get install -y git
+    - pip install bandit
+  script:
+    - echo "🔍 Ejecutando Bandit..."
+    - bandit -r src/ -f json -o bandit-report.json || true
+    - bandit -r src/ -f html -o bandit-report.html || true
+    - bandit -r src/ -f txt -o bandit-report.txt || true
+
+    - echo "📋 Resumen de vulnerabilidades:"
+    - python3 -c "import json; d=json.load(open('bandit-report.json')); print('Total:', len(d.get('results', []))); [print(r['filename'], r['issue_severity'], r['issue_text']) for r in d.get('results', [])]"
+
+    - echo "📝 Reporte TXT:"
+    - cat bandit-report.txt || echo 'No disponible'
+
+  artifacts:
+    paths:
+      - bandit-report.json
+      - bandit-report.html
+      - bandit-report.txt
+    when: always
+
+trufflehog-secrets:
+  stage: test
+  image: python:3.9-slim
+  allow_failure: true
+  before_script:
+    - apt-get update && apt-get install -y git
+    - pip install truffleHog
+  script:
+    - echo "🔐 Ejecutando TruffleHog..."
+    - trufflehog --json . > trufflehog-report.json || echo '{"results":[]}' > trufflehog-report.json
+
+    - echo "📋 Resultados:"
+    - python3 -c "import json, os; p='trufflehog-report.json'; print('Secretos encontrados:', len(json.load(open(p))) if os.path.getsize(p)>0 else 0)"
+
+    - echo "🔎 Búsqueda manual:"
+    - grep -r -E '(AKIA[0-9A-Z]{16}|ghp_[0-9A-Za-z]{36})' src/ tests/ || echo 'No se encontraron secretos'
+
+  artifacts:
+    paths:
+      - trufflehog-report.json
+    when: always
+
+report-summary:
+  stage: test
+  image: python:3.9-slim
+  needs:
+    - bandit-sast
+    - trufflehog-secrets
+  script:
+    - echo "📊 RESUMEN FINAL DE SEGURIDAD"
+
+    - echo "🔍 Bandit:"
+    - python3 -c "import json, os; p='bandit-report.json'; print('Vulnerabilidades:', len(json.load(open(p)).get('results', [])) if os.path.exists(p) else 'Reporte no disponible')"
+
+    - echo "🔐 TruffleHog:"
+    - python3 -c "import json, os; p='trufflehog-report.json'; print('Secretos:', len(json.load(open(p))) if os.path.exists(p) and os.path.getsize(p)>0 else 0)"
+
+  artifacts:
+    when: always
